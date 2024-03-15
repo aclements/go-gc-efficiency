@@ -12,7 +12,7 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/aclements/go-gc-efficiency/internal/perf"
+	"github.com/aclements/go-perfevent/perfbench"
 )
 
 const wordBytes = int(unsafe.Sizeof((*int)(nil)))
@@ -73,16 +73,13 @@ func bench[T any](b *testing.B) {
 	sizeofT := unsafe.Sizeof(*new(T))
 
 	b.Run(fmt.Sprintf("bytes=%d", sizeofT), func(b *testing.B) {
-		cs := openCounters(b)
-		defer cs.Close()
+		cs := perfbench.Open(b)
 
 		var mstats runtime.MemStats
 		runtime.ReadMemStats(&mstats)
 		startGCs := mstats.NumGC
 		b.ResetTimer()
-		cs.Start()
-		// XXX Subtract paused time. Maybe "Read" is too low-level. What do you
-		// ever do with the raw values? I should instead have a start/stop API.
+		cs.Reset()
 
 		var total uintptr
 		for range b.N {
@@ -126,9 +123,7 @@ func BenchmarkZeroLLCMiss(b *testing.B) {
 
 	for bytes := wordBytes; bytes <= 32768*wordBytes; bytes *= 2 {
 		b.Run(fmt.Sprintf("bytes=%d", bytes), func(b *testing.B) {
-			cs := openCounters(b)
-			defer cs.Close()
-			cs.Start()
+			cs := perfbench.Open(b)
 
 			var x []byte
 			for range b.N {
@@ -145,60 +140,4 @@ func BenchmarkZeroLLCMiss(b *testing.B) {
 			b.ReportMetric(float64(duration.Nanoseconds())/float64(bytes*b.N), "ns/byte")
 		})
 	}
-}
-
-var events = [...]perf.Event{
-	perf.EventCPUCycles,
-	perf.EventInstructions,
-	perf.EventCacheMisses,
-	perf.EventCacheReferences,
-}
-
-type Counters struct {
-	b *testing.B
-
-	counters [len(events)]*perf.Counter
-}
-
-func openCounters(b *testing.B) *Counters {
-	cs := Counters{b: b}
-
-	for i, event := range events {
-		var err error
-		cs.counters[i], err = perf.OpenCounter(event)
-		if err != nil {
-			b.Logf("error opening counter %s: %v", event, err)
-		}
-	}
-
-	return &cs
-}
-
-func (cs *Counters) Start() {
-	for _, c := range cs.counters {
-		c.Start()
-	}
-}
-
-func (cs *Counters) Stop() {
-	for _, c := range cs.counters {
-		c.Stop()
-	}
-}
-
-func (cs *Counters) Close() {
-	if cs.b == nil {
-		return
-	}
-
-	for i, c := range cs.counters {
-		val, err := c.Read()
-		if err != nil {
-			cs.b.Logf("error reading %s: %v", events[i], err)
-		} else if val.TimeRunning > 0 {
-			cs.b.ReportMetric(float64(val.Value())/float64(cs.b.N), events[i].String()+"/op")
-		}
-		c.Close()
-	}
-	cs.b = nil
 }
