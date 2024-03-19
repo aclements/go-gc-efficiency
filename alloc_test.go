@@ -23,6 +23,10 @@ type word [wordBytes]byte
 var ballast []byte
 
 func BenchmarkAllocPtr(b *testing.B) {
+	// We use a ballast rather than SetMemoryLimit to get a typical GC sawtooth
+	// so that we in turn get "typical" reuse of swept memory. It *probably*
+	// doesn't matter, but this way we don't have to worry about triggering
+	// strange behavior from a near-empty post-GC heap.
 	ballast = make([]byte, llcBytes)
 	defer func() { ballast = nil }()
 
@@ -103,8 +107,7 @@ func bench[T any](b *testing.B) {
 		cs.Stop()
 		b.StopTimer()
 
-		duration := b.Elapsed()
-		b.ReportMetric(float64(duration.Nanoseconds())/float64(int(sizeofT)*b.N), "ns/byte")
+		reportPerByte(b, sizeofT, cs)
 
 		// Confirm that no automatic GCs happened during the benchmark.
 		runtime.ReadMemStats(&mstats)
@@ -136,8 +139,19 @@ func BenchmarkZeroLLCMiss(b *testing.B) {
 			cs.Stop()
 			b.StopTimer()
 
-			duration := b.Elapsed()
-			b.ReportMetric(float64(duration.Nanoseconds())/float64(bytes*b.N), "ns/byte")
+			reportPerByte(b, uintptr(bytes), cs)
 		})
+	}
+}
+
+func reportPerByte(b *testing.B, bytesPerOp uintptr, cs *perfbench.Counters) {
+	bytes := bytesPerOp * uintptr(b.N)
+	duration := b.Elapsed()
+	b.ReportMetric(float64(duration.Nanoseconds())/float64(bytes), "ns/byte")
+	if cycles, ok := cs.Total("cpu-cycles"); ok {
+		b.ReportMetric(cycles/float64(bytes), "cpu-cycles/byte")
+	}
+	if inst, ok := cs.Total("instructions"); ok {
+		b.ReportMetric(inst/float64(bytes), "instructions/byte")
 	}
 }
